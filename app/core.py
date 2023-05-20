@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, List, Union
 
+import json
 import ffmpeg
 import numpy as np
 import whisper
@@ -12,6 +13,7 @@ from config import MEDIA_DIR
 from db import ENGINE, Media, Segment, Transcript
 from pytube import Playlist, YouTube
 from sqlalchemy.orm import Session
+import logging
 
 
 # Whisper transcription functions
@@ -67,7 +69,9 @@ class MediaManager:
         audio_dir = Path(media_obj.filepath).parent
         writer = whisper.utils.get_writer("all", audio_dir)
         writer(transcript, "transcript")
+        self._save_transcript(media_obj, transcript, whisper_model, **whisper_args)
 
+    def _save_transcript(self, media_obj: Media, transcript, whisper_model: str, **whisper_args):
         # Add transcript to the database
         self.session.add(
             Transcript(
@@ -117,8 +121,10 @@ class MediaManager:
                     save_dir = self.media_dir / f"""{source_dirname}-{datetime.now().strftime("%Y-%m-%d %H-%M-%S")}"""
                 # Download the audio file
                 yc.streams.get_by_itag(140).download(save_dir, filename=save_filename)
-            elif source_type == "upload":
+            elif source_type == "upload files" or source_type == "upload directory":
                 # Parse the file name from the source
+                logging.info(f"SOURCE: {source}")
+
                 tokens = source.name.split(".")
                 source_name = ".".join(tokens[:-1])
                 # Remove any non-alphanumeric characters from the source name and replace them with a hyphen
@@ -132,8 +138,27 @@ class MediaManager:
                 save_dir.mkdir(exist_ok=True)
                 save_filename = f"audio.{source_format}"
                 # Save the audio file
-                with open(save_dir / save_filename, "wb") as f:
-                    f.write(source.read())
+                # with open(save_dir / save_filename, "wb") as f:
+                #     f.write(source.read())
+                logging.info(f"Copying {source} ---- to ----- {save_dir / save_filename}")
+                # shutil.copy(source, save_dir / save_filename)
+
+                if source_type == "upload directory":
+                    # Check if there are transcription files (source.stem.pydict, source.stem.txt, source.stem.vtt, source.stem.sret) 
+                    # in the same directory as the audio file
+                    # If there are, copy them over to save_dir
+                    vtt_file = source.with_suffix('.vtt')
+                    if vtt_file.is_file():
+                        shutil.copy(vtt_file, save_dir / vtt_file.name)
+                    srt_file = source.with_suffix('.srt')
+                    if srt_file.is_file():
+                        shutil.copy(srt_file, save_dir / srt_file.name)
+                    txt_file = source.with_suffix('.txt')
+                    if txt_file.is_file():
+                        shutil.copy(txt_file, save_dir / txt_file.name)
+                    pydict_file = source.with_suffix('.pydict')
+                    if pydict_file.is_file():
+                        shutil.copy(pydict_file, save_dir / pydict_file.name)
 
             # Save the media object to the database
             media_obj = Media(
@@ -147,8 +172,29 @@ class MediaManager:
 
             self.session.add(media_obj)
 
-            # Transcribe the audio file
-            self._transcribe_and_save(media_obj, whisper_model, **whisper_args)
+            if whisper_args["task"] != "skip":
+              # Transcribe the audio file
+              self._transcribe_and_save(media_obj, whisper_model, **whisper_args)
+            else:
+              # Skip transcription/translation
+              # Find transcript file (*.pydict) in source directory that matches the source filename and upload to database
+              transcript = {}
+              audio_dir = Path(media_obj.filepath).parent
+              logging.info(f"ANTON - audio_dir  {audio_dir}")
+              logging.info(f"Copying {source} to {save_dir / save_filename}")
+              for file in audio_dir.iterdir():
+                  logging.info(f"ANTON -  {file.stem}")
+                  logging.info(f"ANTON_2 - {source_name}")
+
+                #   if file.stem == source_name:
+                #       with open(file, "r") as f:
+                #           transcript = json.load(f)
+                #       break
+              else:
+                  raise FileNotFoundError(f"No transcript file found in {audio_dir} for media file {media_obj.filepath}." + \
+                                            f"source_name: {source_name}.")
+
+              self._save_transcript(media_obj, transcript, whisper_model, **whisper_args)
 
         # Commit the changes to the database
         self.session.commit()
@@ -162,8 +208,19 @@ class MediaManager:
                 source_list = list(Playlist(source))
             else:
                 source_list = [source]
-        elif source_type == "upload":
+        elif source_type == "upload files":
             source_list = source if type(source) == list else [source]
+        elif source_type == "upload directory":
+            source_list = []
+            logging.info(f"ANTON - MediaManager.add type(source): {type(source)}")
+            INPUT_DIR = Path.cwd() / source
+            # INPUT_DIR = Path(source)
+            logging.info(f"MediaManager.add INPUT_DIR: {INPUT_DIR}")
+            for file in list(INPUT_DIR.rglob("*.mp3*")):
+                logging.info(f"ANTON file: {file}")
+                # append the file to the source_list
+                source_list.append(file)
+            logging.info(f"MediaManager.add source_list: {source_list}")
 
         # Download & save the audio files and add them to the database
         self._create(source_list=source_list, source_type=source_type, **whisper_args)
@@ -243,9 +300,11 @@ class MediaManager:
         if "search_by_transcript" in filters:
             filter_args.append(Transcript.text.like(f"""%{filters["search_by_transcript"]}%"""))
 
+        logging.info("Getting list: querying Media objects with transcript")
         # Get the media objects
         media_objs = self.session.query(Media).join(Transcript)
 
+        logging.info("Getting list: filtering returned media objects")
         # Filter the media objects
         if len(filter_args) > 0:
             media_objs = media_objs.filter(*filter_args)
@@ -259,8 +318,10 @@ class MediaManager:
         return formatted_media_list
 
     def get_detail(self, media_id: str):
-        "Get the details of a media object"
+        # "Get the details of a media object"
+        logging.info("Getting detail: running query with filter to find media object...")
         media_obj = self.session.query(Media).filter(Media.id == media_id).first()
+        logging.info("Getting detail: Got the media object!")
         return self._format_media_detail(media_obj)
 
     def _format_media_base(self, media_obj: Media):
@@ -276,8 +337,9 @@ class MediaManager:
             "generated_by": media_obj.transcript.generated_by,
         }
 
-    def _format_media_detail(self, media_obj: Media):
+    def _format_media_detail(self, media_obj: Media, max_segments_first_page: int):
         "Formats the media object to a dictionary"
+        logging.info("Getting detail: formatting media... (" +  media_obj.segments.size + " segments)." )
         base = self._format_media_base(media_obj)
         details = {
             "transcript": media_obj.transcript.text,
@@ -288,9 +350,10 @@ class MediaManager:
                     "end": segment.end,
                     "text": segment.text,
                 }
-                for segment in media_obj.segments
+                for segment in range(min(media_obj.segments.size, max_segments_first_page))
             ],
         }
+        logging.info("Getting detail: done formatting media! There are " + media_obj.segments.size + " segments.")
         base.update(details)
         return base
 

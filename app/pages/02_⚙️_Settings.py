@@ -52,7 +52,7 @@ with st.form("whisper_settings_form"):
         "Condition on previous text", value=st.session_state.whisper_params["condition_on_previous_text"]
     )
     verbose = st.checkbox("Verbose", value=st.session_state.whisper_params["verbose"])
-    task_options = ["transcribe", "translate"]
+    task_options = ["transcribe", "translate", "skip"]
     task = st.selectbox(
         "Default mode", options=task_options, index=task_options.index(st.session_state.whisper_params["task"])
     )

@@ -4,6 +4,7 @@ from pathlib import Path
 import streamlit as st
 from config import get_page_config, get_whisper_settings, save_whisper_settings
 from core import MediaManager
+import logging
 
 st.set_page_config(**get_page_config())
 
@@ -40,15 +41,17 @@ def get_formatted_date(date_str: str) -> str:
 # ---------
 with st.sidebar.expander("➕ &nbsp; Add Media", expanded=False):
     # # Render media type selection on the sidebar & the form
-    source_type = st.radio("Media Source", ["YouTube", "Upload"], label_visibility="collapsed")
+    source_type = st.radio("Media Source", ["YouTube", "Upload Files", "Upload Directory", "Something interestingr"], label_visibility="collapsed")
     with st.form("input_form"):
         if source_type == "YouTube":
             youtube_url = st.text_input("Youtube video or playlist URL")
-        elif source_type == "Upload":
+        elif source_type == "Upload Files":
             input_files = st.file_uploader(
-                "Add one or more files", type=["mp4", "avi", "mov", "mkv", "mp3", "wav"], accept_multiple_files=True
+                "Add one or more files or select a directory", type=["mp4", "avi", "mov", "mkv", "mp3", "wav"], accept_multiple_files=True
             )
-        task_options = ["transcribe", "translate"]
+        elif source_type == "Upload Directory":
+            directory_path = st.text_input('Upload a directory', 'data/originals/Schola/Francisco Canals/1. Teologia/Curso Teologia 1969')
+        task_options = ["skip", "transcribe", "translate"]
         task = st.selectbox(
             "Task", options=task_options, index=task_options.index(st.session_state.whisper_params["task"])
         )
@@ -61,11 +64,13 @@ with st.sidebar.expander("➕ &nbsp; Add Media", expanded=False):
                 source = youtube_url
             else:
                 st.error("Please enter a valid YouTube URL")
-        elif source_type == "Upload":
+        elif source_type == "Upload Files":
             if input_files:
                 source = input_files
             else:
                 st.error("Please upload files")
+        elif source_type == "Upload Directory":
+            source = directory_path
 
         # Lowercase the source type
         source_type = source_type.lower()
@@ -167,6 +172,7 @@ if st.session_state.list_mode:
                 )
 
                 if st.button("🧐 Details", key=f"detail-{media['id']}"):
+                    logging.info(f"Details button pushed. Switchint to details mode and re-running script...")
                     st.session_state.list_mode = False
                     st.session_state.selected_media = media["id"]
                     st.experimental_rerun()
@@ -232,9 +238,11 @@ if st.session_state.list_mode:
 # -----------
 else:
     # Get the selected media object
+    logging.info("Detail view: getting detail...")
     media = media_manager.get_detail(media_id=st.session_state.selected_media)
 
     # Render mini nav
+    logging.info("Detail view: rendering details...")
     back_col, del_col = st.sidebar.columns(2)
     with back_col:
         # Add a button to show the list view
@@ -250,6 +258,7 @@ else:
     st.sidebar.write(f"""### {media["source_name"]}""")
 
     # Render the media. Use both audio & video for youtube
+    logging.info("Detail view: rendering details 2...")
     if media["source_type"] == "youtube":
         st.sidebar.audio(media["filepath"], start_time=st.session_state.selected_media_offset)
         st.sidebar.video(media["source_link"])
@@ -258,6 +267,7 @@ else:
 
     st.write(f'## {media["source_name"]}')
 
+    logging.info("Detail view: rendering details 3...")
     with st.expander("📝 &nbsp; Metadata"):
         # Add a meta caption
         source_type = "YouTube" if media["source_type"] == "youtube" else "uploaded"
@@ -273,6 +283,7 @@ else:
             unsafe_allow_html=True,
         )
 
+    logging.info("Detail view: rendering details 4...")
     with st.expander("📝 &nbsp; Full Transcript"):
         st.markdown(media["transcript"])
         st.write("---")
@@ -281,14 +292,18 @@ else:
         """Clicking on a segment will move start position to the segment (only audio player will continue playing while video will pause)"""
     )
     # Iterate over all segments in the transcript
+    logging.info("Detail view: rendering details 5...")
     for segment in media["segments"]:
         # Create 2 columns
         meta_col, text_col = st.columns([1, 6], gap="small")
 
         with meta_col:
             if st.button(f"▶️ &nbsp; {int(segment['start'])}: {int(segment['end'])}", key=f"play-{segment['number']}"):
+                logging.info("Detail view: button...")
                 st.session_state.selected_media_offset = int(segment["start"])
                 st.experimental_rerun()
 
         with text_col:
             st.write(f'##### `{segment["text"]}`')
+
+    logging.info("Detail view: rendering details 6...")
